@@ -1,11 +1,148 @@
-graylogVersion=5.1.6
-syslogInPort=5140
-nginxExternalHttpsPort=10000
+#!/bin/bash
+# example: sh script nginxHttpsExternalPort domain.name /path/to/folder
+# sh script.sh 10000 internal.local /opt/docker/graylog2
+#
+# Define variables
+#nginxExternalHttpsPort=10000
 nginxExternalHttpPort=10001
-domain=internal.local
-rootFolder=/opt/docker/graylog2
-dockerHostIP=$(hostname -i | cut -f2 -d' ')
+#domain=internal.local
+#rootFolder=/opt/docker/graylog2
+nginxExternalHttpsPort=$1
+domain=$2
+rootFolder=$3
 
+# Main 
+# Function to validate a domain name
+is_valid_domain() {
+	vdomain="$1"
+  if echo "$vdomain" | grep -E -q "^[a-zA-Z0-9.-]+$"; then
+    return 0
+  else
+    return 1
+  fi
+}
+
+# Check if any of the flags are empty, and if so, exit the script
+if [ -z "$nginxExternalHttpsPort" ] || [ -z "$domain" ] || [ -z "$rootFolder" ]; then
+  echo "One or more of the flags are empty. Aborting."
+  exit 1
+fi
+
+# Check nginxExternalHttpsPort as a number
+if ! [ "$nginxExternalHttpsPort" -ge 0 ] 2>/dev/null || ! [ "$nginxExternalHttpsPort" -le 65535 ] 2>/dev/null; then
+  echo "Flag 1 (nginxExternalHttpsPort) must be a number between 0 and 65535. Aborting."
+  exit 1
+fi-
+
+# Check domain as a valid domain name
+if ! is_valid_domain "$domain"; then
+  echo "Flag 2 (domain) must be a valid domain name. Aborting."
+  exit 1
+fi
+
+# Check rootFolder as a valid directory path
+if ! [ -d "$rootFolder" ]; then
+  echo "Flag 3 (rootFolder) must be a valid directory path. Aborting."
+  exit 1
+fi
+
+
+# the following is used to get graylog version
+# Please install skopeo and jq. Alternatively comment the first line and uncomment the next changing accordingly
+image_name="graylog/graylog"; tags=$(skopeo list-tags docker://docker.io/$image_name | jq -r '.Tags[]' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$'); latest_stable_version=$(printf "%s\n" $tags | sort -V | tail -n 1); graylogVersion=$latest_stable_version
+#graylogVersion=5.1.7
+
+# Define ANSI escape codes for colors
+red='\033[0;31m'
+green='\033[0;32m'
+yellow='\033[0;33m'
+blue='\033[0;34m'
+RESET='\033[0m'
+
+#logging variables
+log_level="info"
+log_file="lastrun.log"
+
+# Logging function
+logging() {
+    local color="$1"
+    local log_message="$2"
+    local single_line_event=$(echo "$log_message" | tr -d '\t' | tr -d '\n')
+    # Log to a file
+    echo "$(date +"%Y-%m-%d %H:%M:%S") [$log_level] [graylog_docker] - $single_line_event" >> "$log_file"
+    # Log to syslog
+    #logger -t "DockerComposeScript" -p "user.$log_level" "$single_line_event"
+    # Execute additional actions with the specified color
+    echo "${color}$log_message${RESET}"
+}
+
+# Function to wait for the container to be up and running
+wait_for_container() {
+    local container_name="$1"
+    local max_attempts="$2"
+    local sleep_seconds="$3"
+    local attempt=0
+
+    while [ $attempt -lt $max_attempts ]; do
+        if docker ps -q --filter "name=$container_name" | grep -q .; then
+            return 0  # Container is running
+        fi
+
+        sleep "$sleep_seconds"
+        attempt=$((attempt + 1))
+    done
+
+    return 1  # Container did not start within the specified time
+}
+
+#echo "#####################################################################################" > "$log_file"
+logging $green "Starting GRAYLOG docker compose builder"
+logging $green "This script configures graylog docker${RESET}"
+logging $green "and adds a SYSLOG Output plugin${RESET}"
+logging $green "Nginx is configured for graylog web interface${RESET}"
+logging $green "Graylog ports input file is $rootFolder/graylogports.conf${RESET}"
+
+# Define ports (UDP/TCP)
+# check if file exists
+file_path=$rootFolder/graylogports.conf
+if [ -e "$file_path" ]; then
+    logging $green "$file_path exists. Proceeding..."
+else
+	logging $yellow "$file_path not present will be created automatically with:${RESET}"
+	logging $green "\t 5140:SYSLOG \n\t 5044:BEATS \n\t 5555:RAW \n\t 12201:GELF \n\t 13301:Forwarder Data \n\t 13302:Forwarder Config${RESET}"
+	# write some ports
+	cat <<EOT > "$rootFolder/graylogports.conf"
+5140:SYSLOG
+5044:BEATS
+5555:RAW
+12201:GELF
+13301:Forwarder Data
+13302:Forwarder Config
+EOT
+fi
+
+# check if file has correct syntax
+logging $yellow "checking graylogports.conf syntax"
+while IFS= read -r line; do
+    # Remove leading and trailing whitespace
+    line=$(echo "$line" | sed 's/^[[:space:]]*//' | sed 's/[[:space:]]*$//')
+    # Check if the line is empty or starts with a comment
+    if [ -z "$line" ] || [ "$(echo "$line" | cut -c 1)" = "#" ]; then
+        continue  # Skip empty lines and lines starting with a comment
+    fi
+    # Split the line into parts using ":" as the delimiter
+    port=$(echo "$line" | cut -d':' -f1)
+    rest=$(echo "$line" | cut -d':' -f2-)
+    # Check if the port is a valid number between 1 and 65535
+    if [ "$port" -ge 1 ] && [ "$port" -le 65535 ] && [ "$port" -eq "$port" ] 2>/dev/null; then
+        logging $green "\t Valid line: $port:$rest"
+    else
+        logging $green "\t Invalid line: $line"
+    fi
+done < "$file_path"
+
+
+# create folder structure
 mkdir -p $rootFolder/compiler
 mkdir -p $rootFolder/plugin
 mkdir -p $rootFolder/ssl
@@ -13,21 +150,26 @@ mkdir -p $rootFolder/target
 mkdir -p $rootFolder/nginx/conf $rootFolder/nginx/keys
 cd $rootFolder
 
+logging $yellow "Please define graylog credentials and secret ${RESET}"
 # define graylog credentials
-read -p "Enter password secret: " pwdsecret
-str1=`echo $pwdsecret | tr -d '\n' | sha256sum | cut -d " " -f1`
 read -p "Enter admin password: " pwdweb
-str2=`echo $pwdweb | tr -d '\n' | sha256sum | cut -d " " -f1`
-echo GRAYLOG_PASSWORD_SECRET="$str1" > .env
-echo GRAYLOG_ROOT_PASSWORD_SHA2="$str2" >> .env
+str1=`echo $pwdweb | tr -d '\n' | sha256sum | cut -d " " -f1`
+read -p "Enter password secret: " pwdsecret
+str2=`echo $pwdsecret | tr -d '\n' | sha256sum | cut -d " " -f1`
+echo GRAYLOG_ROOT_PASSWORD_SHA2="$str1" > .env
+echo GRAYLOG_PASSWORD_SECRET="$str2" >> .env
 echo syslogInPort=$syslogInPort >> .env
 echo nginxExternalHttpsPort=$nginxExternalHttpsPort >> .env
 echo nginxExternalHttpPort=$nginxExternalHttpPort >> .env
 echo dockerHostIP=$dockerHostIP >> .env
 
+#set variables
+dockerHostIP=$(hostname -i | cut -f2 -d' ')
+
 #define nginx graylog credentials for user admin in this case
 #htpasswd -n admin > $rootFolder/nginx/keys/nginx.htpasswd
 
+logging $yellow "Writing docker-compose.yml"
 cat << 'EOT' > $rootFolder/docker-compose.yml
 version: "3.8"
 
@@ -87,15 +229,19 @@ services:
       GRAYLOG_ELASTICSEARCH_HOSTS: "http://opensearch:9200"
       GRAYLOG_MONGODB_URI: "mongodb://mongodb:27017/graylog"
     ports:
-    - "5044:5044/tcp"   # Beats
-    - "$syslogInPort:$syslogInPort/udp"   # Syslog
-    - "$syslogInPort:$syslogInPort/tcp"   # Syslog
-    - "5555:5555/tcp"   # RAW TCP
-    - "5555:5555/udp"   # RAW TCP
-    - "12201:12201/tcp" # GELF TCP
-    - "12201:12201/udp" # GELF UDP
-    - "13301:13301/tcp" # Forwarder data
-    - "13302:13302/tcp" # Forwarder config
+EOT
+
+# Loop through each line in graylogports.conf and append port mappings to the Docker Compose file
+docker_compose_file="$rootFolder/docker-compose.yml"
+while IFS=: read -r port description; do
+logging $green "\t Adding $description port $port TCP and UDP"
+cat <<EOT >> "$docker_compose_file"
+      - "$port:$port/tcp"  # $description TCP"
+      - "$port:$port/udp"  # $description UDP"
+EOT
+done < "$rootFolder/graylogports.conf"
+
+cat << 'EOT' >> $rootFolder/docker-compose.yml
     volumes:
       - "graylog_data:/usr/share/graylog/data/data"
       - "graylog_journal:/usr/share/graylog/data/journal"
@@ -139,6 +285,9 @@ volumes:
   graylog_journal:
 EOT
 
+logging $yellow "Writing ./compiler/Dockerfile"
+logging $green "\t This container is used only once"
+logging $green "\t Purpose: \n\t\t create SSL certificates \n\t\t compile the graylog plugin"
 cat << EOT > $rootFolder/compiler/Dockerfile
 FROM debian:latest
 ARG graylogVersion=$graylogVersion
@@ -166,6 +315,10 @@ RUN sed -i.bak "s/4\.2\.6/$graylogVersion/g" pom.xml
 RUN mvn package
 ENTRYPOINT ["cron", "-f"]
 EOT
+
+
+logging $yellow "Writing ./nginx/conf/nginx.conf"
+logging $green "\t This file has nginx general config items"
 
 cat << 'EOT' > $rootFolder/nginx/conf/nginx.conf
 worker_processes  4;
@@ -200,6 +353,9 @@ http {
 }
 EOT
 
+logging $yellow "Writing ./nginx/conf/graylog.conf"
+logging $green "\t This file has graylog config items"
+
 cat << EOT > $rootFolder/nginx/conf/graylog.conf
 server
 {
@@ -230,14 +386,90 @@ cat << 'EOT' >> $rootFolder/nginx/conf/graylog.conf
 }
 EOT
 
-docker compose up -d
+logging $yellow "doing docker compose up -d"
+docker compose up -d  2>&1 | while IFS= read -r line; do
+    echo "$(date +"%Y-%m-%d %H:%M:%S") [$log_level] [graylog_docker] - docker compose: $line" >> "$log_file"
+done
+# Check if the command was successful
+if [ $? -eq 0 ]; then
+	logging $green "\t docker Compose up successful."
+else
+    logging red "\t docker Compose up failed."
+fi
+
+#check container up if not start
+max_attempts=30
+sleep_seconds=1
+logging $yellow "Check if graylog-compiler container is up"
+docker start graylog-compiler > /dev/null
+wait_for_container "graylog-compiler" "$max_attempts" "$sleep_seconds"
+if [ $? -eq 0 ]; then
+    logging $green "\t Container $container_name is up and running."
+else
+    logging $red "\tcontainer $container_name did not start within the specified time."
+    # Handle the failure as needed
+    # For example, you can stop the container: docker stop "$container_name"
+fi
 
 #copy files to volumes folders
-docker exec graylog-compiler bash -c "cp /opt/git/graylog2-output-syslog/target/graylog-output-syslog-$graylogVersion.jar /opt/git/graylog2-output-syslog/tmptarget/"
-docker exec graylog-compiler bash -c 'cp /opt/ssl/graylog-sslkey* /opt/ssl/tmpssl/'
-#Place files on the correct place
-cp $rootFolder/ssl/* $rootFolder/nginx/keys/
+logging $yellow "Copying files"
+logging $green "\t copying plugin to graylog volume"
+docker_command="docker exec graylog-compiler bash -c \"cp /opt/git/graylog2-output-syslog/target/graylog-output-syslog-$graylogVersion.jar /opt/git/graylog2-output-syslog/tmptarget/\""
+output=$(eval "$docker_command" 2>&1)
+if [ $? -eq 0 ]; then
+    logging $green "\t docker exec cp for container graylog-compiler successful."
+else
+    log_message="$(date +'%Y-%m-%d %H:%M:%S') [$log_level] [graylog_docker] - docker cp: $output"
+    echo "$log_message" >> "$log_file"
+    logging $red "\t docker exec cp for container graylog-compiler failed."
+fi
+
+#beware that there might be other plugins or previous versions
+#rm -rf $rootFolder/plugin/graylog-output-syslog*
 cp $rootFolder/target/* $rootFolder/plugin/
+logging $green "\t copying certificates to nginx volume"
+docker_command="docker exec graylog-compiler bash -c 'cp /opt/ssl/graylog-sslkey* /opt/ssl/tmpssl/'"
+output=$(eval "$docker_command" 2>&1)
+if [ $? -eq 0 ]; then
+    logging $green "\t docker exec cp for container graylog-nginx successful."
+else
+    log_message="$(date +'%Y-%m-%d %H:%M:%S') [$log_level] [graylog_docker] - docker cp: $output"
+    echo "$log_message" >> "$log_file"
+    logging $red "\t docker exec cp for container graylog-nginx failed."
+fi
+cp $rootFolder/ssl/* $rootFolder/nginx/keys/
 #restart services
-docker restart graylog-nginx
-docker restart graylog-server
+logging $yellow "restarting graylog and nginx containers"
+docker_command="docker restart graylog-nginx"
+output=$(eval "$docker_command" 2>&1)
+if [ $? -eq 0 ]; then
+    logging $green "\t docker restart for container graylog-nginx successful."
+else
+    log_message="$(date +'%Y-%m-%d %H:%M:%S') [$log_level] [graylog_docker] - docker restart: $output"
+    echo "$log_message" >> "$log_file"
+    logging $red "\t docker restart for container graylog-nginx failed."
+fi
+docker_command="docker restart graylog-server"
+output=$(eval "$docker_command" 2>&1)
+if [ $? -eq 0 ]; then
+    logging $green "\t docker restart for container graylog-server successful."
+else
+    log_message="$(date +'%Y-%m-%d %H:%M:%S') [$log_level] [graylog_docker] - docker restart: $output"
+    echo "$log_message" >> "$log_file"
+    logging $red "\t docker restart for container graylog-server failed."
+fi
+logging $yellow "stoping compiler container"
+docker_command="docker stop graylog-compiler"
+output=$(eval "$docker_command" 2>&1)
+if [ $? -eq 0 ]; then
+    logging $green "\t docker stop for container graylog-server successful."
+else
+    log_message="$(date +'%Y-%m-%d %H:%M:%S') [$log_level] [graylog_docker] - docker stop: $output"
+    echo "$log_message" >> "$log_file"
+    logging $red "\t docker stop for container graylog-server failed."
+fi
+logging $green "Run Logs are in $log_file."
+logging $green "You can access graylog web interface with: \n\t https://graylog.$domain:$nginxExternalHttpsPort/graylog/"
+
+#remove everything
+#docker compose down --volumes --rmi all --remove-orphans
