@@ -1,6 +1,6 @@
 #!/bin/sh
-# example: sh script -p nginxHttpsExternalPort -d domain.name -f /path/to/folder
-# sh script.sh -p 10000 -d internal.local -f /opt/docker/graylog2
+# example: sh script nginxHttpsExternalPort domain.name /path/to/folder
+# sh script.sh 10000 internal.local /opt/docker/graylog2
 #
 # Define variables
 #nginxExternalHttpsPort=10000
@@ -285,6 +285,8 @@ services:
     restart: "on-failure"
 
   opensearch:
+    cap_add:
+      - SYS_ADMIN #Allow ulimits
     container_name: "graylog-elastic"
     hostname: "graylogelastic"
     image: "opensearchproject/opensearch:2.4.0"
