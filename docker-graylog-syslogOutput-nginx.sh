@@ -7,11 +7,59 @@
 nginxExternalHttpPort=10001
 #domain=internal.local
 #rootFolder=/opt/docker/graylog2
-nginxExternalHttpsPort=$1
-domain=$2
-rootFolder=$3
+#nginxExternalHttpsPort=$1
+#domain=$2
+#rootFolder=$3
 
 # Main 
+
+cat <<EOT > "./splash"
+#############################################
+#     ____                 _                #
+#    / ___|_ __ __ _ _   _| | ___   __ _    #
+#   | |  _| '__/ _\` | | | | |/ _ \ / _\` |   #
+#   | |_| | | | (_| | |_| | | (_) | (_| |   #
+#    \____|_|  \__,_|\__, |_|\___/ \__, |   #
+#                    |___/         |___/    #
+#     ____              ___                 #
+#    |  _ \  _____   __/ _ \ _ __  ___      #
+#    | | | |/ _ \ \ / / | | | '_ \/ __|     #
+#    | |_| |  __/\ V /| |_| | |_) \__ \     #
+#    |____/ \___| \_/  \___/| .__/|___/     #
+#                           |_|             #
+#                                           #
+#   Brought to you by Marco Vaz (aka MTV)   #
+#                                           #
+#                                           #
+#############################################
+EOT
+
+cat "./splash"
+echo \
+
+# Function to display usage information
+usage() {
+  echo "Usage: $0 -p|--port <port> -d|--domain <domain_name> -f|--rootFolder <folder_path>"
+  echo "\n"
+  echo "  -p, --port <port>                 Specify the HTTPS port for Nginx (0-65535)."
+  echo "  -d, --domain <domain_name>        Specify the domain name for the service."
+  echo "  -f, --rootFolder <folder_path>    Specify the root folder path for the service."
+  echo "  --help                            Display this help message."
+  echo "\n"
+  echo "Graylog needs ports for input to ingest events from systems."
+  echo "A file 'graylogports.conf' is used to allow for more flexibility for every environment"
+  echo "If not present then will be created using default values, namely:"
+  echo "\t 5140:SYSLOG"
+  echo "\t 5044:BEATS"
+  echo "\t 5555:RAW"
+  echo "\t 12201:GELF"
+  echo "\t 13301:Forwarder Data"
+  echo "\t 13302:Forwarder Config"
+  echo "\n"
+  echo "Please note that all this ports are both TCP and UDP"
+  exit 1
+}
+
 # Function to validate a domain name
 is_valid_domain() {
 	vdomain="$1"
@@ -22,36 +70,75 @@ is_valid_domain() {
   fi
 }
 
+# Parse command line arguments using getopts
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -p|--port)
+      nginxExternalHttpsPort="$2"
+	  # Check nginxExternalHttpsPort as a number
+	  if ! [ "$nginxExternalHttpsPort" -ge 0 ] 2>/dev/null || ! [ "$nginxExternalHttpsPort" -le 65535 ] 2>/dev/null; then
+	    echo "Flag nginxExternalHttpsPort must be a number between 0 and 65535. Aborting."
+		usage
+	    exit 1
+	  fi
+      shift 2
+      ;;
+    -d|--domain)
+      domain="$2"
+	  # Check domain as a valid domain name
+	  if ! is_valid_domain "$domain"; then
+	    echo "Flag domain must be a valid domain name. Aborting."
+		usage
+	    exit 1
+	  fi
+      shift 2
+      ;;
+    -f|--rootFolder)
+      rootFolder="$2"
+	  # Check rootFolder as a valid directory path
+	  if ! [ -d "$rootFolder" ]; then
+	    echo "Flag rootFolder must be a valid directory path. Aborting."
+		usage
+	    exit 1
+	  fi
+      shift 2
+      ;;
+    --help)
+      usage
+      ;;
+    *)
+      echo "Unknown option: $1" >&2
+      usage
+      ;;
+  esac
+done
+
 # Check if any of the flags are empty, and if so, exit the script
 if [ -z "$nginxExternalHttpsPort" ] || [ -z "$domain" ] || [ -z "$rootFolder" ]; then
   echo "One or more of the flags are empty. Aborting."
-  exit 1
+  usage
 fi
-
-# Check nginxExternalHttpsPort as a number
-if ! [ "$nginxExternalHttpsPort" -ge 0 ] 2>/dev/null || ! [ "$nginxExternalHttpsPort" -le 65535 ] 2>/dev/null; then
-  echo "Flag 1 (nginxExternalHttpsPort) must be a number between 0 and 65535. Aborting."
-  exit 1
-fi-
-
-# Check domain as a valid domain name
-if ! is_valid_domain "$domain"; then
-  echo "Flag 2 (domain) must be a valid domain name. Aborting."
-  exit 1
-fi
-
-# Check rootFolder as a valid directory path
-if ! [ -d "$rootFolder" ]; then
-  echo "Flag 3 (rootFolder) must be a valid directory path. Aborting."
-  exit 1
-fi
-
 
 # the following is used to get graylog version
-# Please install skopeo and jq. Alternatively comment the first line and uncomment the next changing accordingly
-image_name="graylog/graylog"; tags=$(skopeo list-tags docker://docker.io/$image_name | jq -r '.Tags[]' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$'); latest_stable_version=$(printf "%s\n" $tags | sort -V | tail -n 1); graylogVersion=$latest_stable_version
-#graylogVersion=5.1.7
+# Please install skopeo and jq. 
+# Function to check if a command is available
+command_exists() {
+  command -v "$1" >/dev/null 2>&1
+}
 
+skopeo_installed=$(command_exists "skopeo" && echo "yes" || echo "no")
+jq_installed=$(command_exists "jq" && echo "yes" || echo "no")
+
+# Ask the user for the Graylog version
+if [ "$skopeo_installed" = "no" ] || [ "$jq_installed" = "no" ]; then
+  read -p "Enter the Graylog version (default: 5.1.7): " graylogVersion
+  graylogVersion=${graylogVersion:-"5.1.7"}  # Set default value to "5.1.7" if user presses Enter
+  logging $green "Graylog version set to: $graylogVersion"
+else
+	image_name="graylog/graylog"; tags=$(skopeo list-tags docker://docker.io/$image_name | jq -r '.Tags[]' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$'); latest_stable_version=$(printf "%s\n" $tags | sort -V | tail -n 1); graylogVersion=$latest_stable_version
+fi
+#graylogVersion=5.1.7
+echo $graylogVersion
 # Define ANSI escape codes for colors
 red='\033[0;31m'
 green='\033[0;32m'
@@ -150,6 +237,9 @@ mkdir -p $rootFolder/target
 mkdir -p $rootFolder/nginx/conf $rootFolder/nginx/keys
 cd $rootFolder
 
+#set variables
+dockerHostIP=$(hostname -i | cut -f2 -d' ')
+
 logging $yellow "Please define graylog credentials and secret ${RESET}"
 # define graylog credentials
 read -p "Enter admin password: " pwdweb
@@ -162,9 +252,7 @@ echo syslogInPort=$syslogInPort >> .env
 echo nginxExternalHttpsPort=$nginxExternalHttpsPort >> .env
 echo nginxExternalHttpPort=$nginxExternalHttpPort >> .env
 echo dockerHostIP=$dockerHostIP >> .env
-
-#set variables
-dockerHostIP=$(hostname -i | cut -f2 -d' ')
+echo GRAYLOG_IMAGE=graylog/graylog:$graylogVersion >> .env
 
 #define nginx graylog credentials for user admin in this case
 #htpasswd -n admin > $rootFolder/nginx/keys/nginx.htpasswd
@@ -288,6 +376,7 @@ EOT
 logging $yellow "Writing ./compiler/Dockerfile"
 logging $green "\t This container is used only once"
 logging $green "\t Purpose: \n\t\t create SSL certificates \n\t\t compile the graylog plugin"
+
 cat << EOT > $rootFolder/compiler/Dockerfile
 FROM debian:latest
 ARG graylogVersion=$graylogVersion
@@ -311,11 +400,28 @@ WORKDIR /opt/git
 RUN git clone https://github.com/wizecore/graylog2-output-syslog
 RUN mkdir -p /opt/git/graylog2-output-syslog/tmptarget
 WORKDIR /opt/git/graylog2-output-syslog
-RUN sed -i.bak "s/4\.2\.6/$graylogVersion/g" pom.xml
+EOT
+
+if echo "$graylogVersion" | grep -qE '^[0-9]+\.[0-9]+$'; then
+    graylogVersion="${graylogVersion}.0"
+fi
+
+major=$(echo $graylogVersion | awk -F '.' '{print $1}')
+minor=$(echo $graylogVersion | awk -F '.' '{print $2}')
+
+if [ $major -eq 4 ] && [ $minor -ge 1 ] || [ $major -eq 5 ] && [ $minor -le 1 ]; then
+    echo RUN sed -i.bak \"s/4\.2\.6/$graylogVersion/g\" pom.xml >> $rootFolder/compiler/Dockerfile
+elif [ $major -eq 5 ] && [ $minor -ge 2 ]; then
+    echo RUN sed -i.bak \"s/4\.2\.6/$graylogVersion/g\" pom.xml >> $rootFolder/compiler/Dockerfile
+	echo RUN sed -i.bak.v2 "'/<dependencies>/a\<dependency>\\\n        <groupId>com.fasterxml.jackson.core<\/groupId>\\\n        <artifactId>jackson-databind<\/artifactId>\\\n        <version>2.12.5<\/version>\\\n    <\/dependency>\\\n    <dependency>\\\n        <groupId>com.fasterxml.jackson.core<\/groupId>\\\n        <artifactId>jackson-core<\/artifactId>\\\n        <version>2.15.3<\/version>\\\n    <\/dependency>\\\n    <dependency>\\\n        <groupId>io.dropwizard.metrics<\/groupId>\\\n        <artifactId>metrics-core<\/artifactId>\\\n        <version>4.2.21<\/version>\\\n    <\/dependency>\\\n    <dependency>\\\n        <groupId>org.glassfish.corba<\/groupId>\\\n        <artifactId>glassfish-corba-omgapi<\/artifactId>\\\n        <version>4.2.1<\/version>\\\n    <\/dependency>\\\n    <dependency>\\\n        <groupId>com.eaio.uuid<\/groupId>\\\n        <artifactId>uuid<\/artifactId>\\\n        <version>3.2<\/version>\\\n    <\/dependency>\\\n    <dependency>\\\n        <groupId>javax<\/groupId>\\\n        <artifactId>javaee-api<\/artifactId>\\\n        <version>8.0<\/version>\\\n        <scope>provided<\/scope>\\\n    <\/dependency>\\\n    <dependency>\\\n        <groupId>com.google.inject.extensions<\/groupId>\\\n        <artifactId>guice-assistedinject<\/artifactId>\\\n        <version>7.0.0<\/version>\\\n    <\/dependency>\\\n    <dependency>\\\n        <groupId>com.google.inject<\/groupId>\\\n        <artifactId>guice<\/artifactId>\\\n        <version>7.0.0<\/version>\\\n    <\/dependency>\\\n    <dependency>\\\n        <groupId>com.google.guava<\/groupId>\\\n        <artifactId>guava<\/artifactId>\\\n\\\n        <version>32.1.3-jre<\/version>\\\n    <\/dependency>\\\n    <dependency>\\\n        <groupId>junit<\/groupId>\\\n        <artifactId>junit<\/artifactId>\\\n        <version>4.12<\/version>\\\n        <scope>test<\/scope>\\\n    <\/dependency>'" pom.xml >> $rootFolder/compiler/Dockerfile
+else
+    echo "Invalid version number"
+fi
+
+cat << 'EOT' >> $rootFolder/compiler/Dockerfile
 RUN mvn package
 ENTRYPOINT ["cron", "-f"]
 EOT
-
 
 logging $yellow "Writing ./nginx/conf/nginx.conf"
 logging $green "\t This file has nginx general config items"
@@ -469,7 +575,7 @@ else
     logging $red "\t docker stop for container graylog-server failed."
 fi
 logging $green "Run Logs are in $log_file."
-logging $green "You can access graylog web interface with: \n\t https://graylog.$domain:$nginxExternalHttpsPort/graylog/"
+logging $green "You can access graylog web interface with: \n\t https://graylog.$domain:$nginxExternalHttpsPort/graylog/ \n\t https://$dockerHostIP:$nginxExternalHttpsPort/graylog/"
 
 #remove everything
 #docker compose down --volumes --rmi all --remove-orphans
