@@ -13,29 +13,15 @@ nginxExternalHttpPort=10001
 
 # Main 
 
-cat <<EOT > "./splash"
-#############################################
-#     ____                 _                #
-#    / ___|_ __ __ _ _   _| | ___   __ _    #
-#   | |  _| '__/ _\` | | | | |/ _ \ / _\` |   #
-#   | |_| | | | (_| | |_| | | (_) | (_| |   #
-#    \____|_|  \__,_|\__, |_|\___/ \__, |   #
-#                    |___/         |___/    #
-#     ____              ___                 #
-#    |  _ \  _____   __/ _ \ _ __  ___      #
-#    | | | |/ _ \ \ / / | | | '_ \/ __|     #
-#    | |_| |  __/\ V /| |_| | |_) \__ \     #
-#    |____/ \___| \_/  \___/| .__/|___/     #
-#                           |_|             #
-#                                           #
-#   Brought to you by Marco Vaz (aka MTV)   #
-#                                           #
-#                                           #
-#############################################
-EOT
-
-cat "./splash"
-echo \
+# Function to validate a domain name
+is_valid_domain() {
+	vdomain="$1"
+  if echo "$vdomain" | grep -E -q "^[a-zA-Z0-9.-]+$"; then
+    return 0
+  else
+    return 1
+  fi
+}
 
 # Function to display usage information
 usage() {
@@ -58,16 +44,6 @@ usage() {
   echo "\n"
   echo "Please note that all this ports are both TCP and UDP"
   exit 1
-}
-
-# Function to validate a domain name
-is_valid_domain() {
-	vdomain="$1"
-  if echo "$vdomain" | grep -E -q "^[a-zA-Z0-9.-]+$"; then
-    return 0
-  else
-    return 1
-  fi
 }
 
 # Parse command line arguments using getopts
@@ -113,11 +89,57 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
+if ss -tln | grep -q $nginxExternalHttpsPort; then
+	echo "Port $nginxExternalHttpsPort is in use. Aborting."
+	usage
+else
+    echo "Chosen port is not in use"
+fi
+
+if ss -tln | grep -q $nginxExternalHttpPort; then
+	echo "Port $nginxExternalHttpPort is in use. Aborting."
+	usage
+else
+    echo "Chosen port is not in use"
+fi
+
 # Check if any of the flags are empty, and if so, exit the script
 if [ -z "$nginxExternalHttpsPort" ] || [ -z "$domain" ] || [ -z "$rootFolder" ]; then
   echo "One or more of the flags are empty. Aborting."
   usage
 fi
+
+# create folder structure
+mkdir -p $rootFolder/compiler
+mkdir -p $rootFolder/plugin
+mkdir -p $rootFolder/ssl
+mkdir -p $rootFolder/target
+mkdir -p $rootFolder/nginx/conf $rootFolder/nginx/keys
+cd $rootFolder
+
+cat <<EOT > "./splash"
+#############################################
+#     ____                 _                #
+#    / ___|_ __ __ _ _   _| | ___   __ _    #
+#   | |  _| '__/ _\` | | | | |/ _ \ / _\` |   #
+#   | |_| | | | (_| | |_| | | (_) | (_| |   #
+#    \____|_|  \__,_|\__, |_|\___/ \__, |   #
+#                    |___/         |___/    #
+#     ____              ___                 #
+#    |  _ \  _____   __/ _ \ _ __  ___      #
+#    | | | |/ _ \ \ / / | | | '_ \/ __|     #
+#    | |_| |  __/\ V /| |_| | |_) \__ \     #
+#    |____/ \___| \_/  \___/| .__/|___/     #
+#                           |_|             #
+#                                           #
+#   Brought to you by Marco Vaz (aka MTV)   #
+#                                           #
+#                                           #
+#############################################
+EOT
+
+cat "./splash"
+echo \
 
 # the following is used to get graylog version
 # Please install skopeo and jq. 
@@ -228,14 +250,6 @@ while IFS= read -r line; do
     fi
 done < "$file_path"
 
-
-# create folder structure
-mkdir -p $rootFolder/compiler
-mkdir -p $rootFolder/plugin
-mkdir -p $rootFolder/ssl
-mkdir -p $rootFolder/target
-mkdir -p $rootFolder/nginx/conf $rootFolder/nginx/keys
-cd $rootFolder
 
 #set variables
 dockerHostIP=$(hostname -i | cut -f2 -d' ')
