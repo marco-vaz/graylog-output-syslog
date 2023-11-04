@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 # example: sh script nginxHttpsExternalPort domain.name /path/to/folder
 # sh script.sh 10000 internal.local /opt/docker/graylog2
 #
